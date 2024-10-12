@@ -36,13 +36,19 @@ from typing import Dict, Any
 from flask_caching import Cache
 import zipfile
 import os
+import logging
 
 app = Flask(__name__)
+app.secret_key = 'your_secret_key'  # Необходимо для Flash сообщений
 cache = Cache(app, config={'CACHE_TYPE': 'simple'})
+
+# Настройка логирования
+logging.basicConfig(level=logging.DEBUG)
 
 YANDEX_API_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
 
 
+@cache.memoize(timeout=300)  # Кэшировать на 5 минут
 def get_files_from_public_link(public_key: str, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
     """
     Получает список файлов и папок по публичной ссылке Яндекс.Диска.
@@ -53,8 +59,10 @@ def get_files_from_public_link(public_key: str, limit: int = 100, offset: int = 
         response.raise_for_status()
         return response.json()
     except requests.exceptions.HTTPError as http_err:
+        logging.error(f"HTTP error occurred: {http_err}")
         return {'error': f"HTTP error occurred: {http_err}"}
     except Exception as err:
+        logging.error(f"Other error occurred: {err}")
         return {'error': f"Other error occurred: {err}"}
 
 
@@ -77,6 +85,8 @@ def files():
     limit = 100
     offset = (page - 1) * limit
 
+    logging.debug(f"Получен запрос с public_key={public_key}, page={page}, file_type={file_type}")
+
     files_data = get_files_from_public_link(public_key, limit=limit, offset=offset)
     if 'error' in files_data:
         flash(files_data['error'], "danger")
@@ -95,13 +105,18 @@ def files():
     # Получение общего количества элементов без учёта фильтрации
     total_items = files_data.get('_embedded', {}).get('total', 0)
 
+    logging.debug(f"Total items: {total_items}")
+
     # Определение наличия следующей и предыдущей страниц
     next_page = page + 1 if offset + limit < total_items else None
     prev_page = page - 1 if page > 1 else None
 
+    logging.debug(f"Pagination - Prev: {prev_page}, Next: {next_page}")
+
     return render_template("files.html", items=items, public_key=public_key, next_page=next_page, prev_page=prev_page, file_type=file_type)
 
 
+# Загрузка выбранного файла
 @app.route("/download", methods=["GET"])
 def download():
     public_key = request.args.get("public_key")
