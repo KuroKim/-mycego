@@ -29,29 +29,42 @@
 # https://disk.yandex.ru/d/bmJBMpJjL-mrsQ
 
 
-from flask import Flask, render_template, request, send_file, redirect, url_for
+from flask import Flask, render_template, request, send_file, redirect, url_for, flash
 import requests
 from io import BytesIO
+from typing import Dict, Any
+from flask_caching import Cache
+import zipfile
+import os
 
 app = Flask(__name__)
+cache = Cache(app, config={'CACHE_TYPE': 'simple'})
 
 YANDEX_API_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
 
 
-# Получение списка файлов по публичной ссылке
-def get_files_from_public_link(public_key: str) -> dict:
-    params = {'public_key': public_key}
-    response = requests.get(YANDEX_API_URL, params=params)
-    if response.status_code == 200:
+def get_files_from_public_link(public_key: str, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+    """
+    Получает список файлов и папок по публичной ссылке Яндекс.Диска.
+    """
+    params = {'public_key': public_key, 'limit': limit, 'offset': offset}
+    try:
+        response = requests.get(YANDEX_API_URL, params=params)
+        response.raise_for_status()
         return response.json()
-    else:
-        return {'error': 'Ошибка при получении данных с Яндекс.Диска.'}
+    except requests.exceptions.HTTPError as http_err:
+        return {'error': f"HTTP error occurred: {http_err}"}
+    except Exception as err:
+        return {'error': f"Other error occurred: {err}"}
 
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
         public_key = request.form.get("public_key")
+        if not public_key:
+            flash("Пожалуйста, введите публичную ссылку.", "danger")
+            return redirect(url_for("index"))
         return redirect(url_for("files", public_key=public_key))
     return render_template("index.html")
 
@@ -59,29 +72,90 @@ def index():
 @app.route("/files")
 def files():
     public_key = request.args.get("public_key")
-    files_data = get_files_from_public_link(public_key)
+    page = int(request.args.get("page", 1))
+    file_type = request.args.get("file_type", "")
+    limit = 100
+    offset = (page - 1) * limit
+
+    files_data = get_files_from_public_link(public_key, limit=limit, offset=offset)
     if 'error' in files_data:
-        return files_data['error']
-    items = files_data['_embedded']['items']
-    return render_template("files.html", items=items, public_key=public_key)
+        flash(files_data['error'], "danger")
+        return redirect(url_for("index"))
+
+    items = files_data.get('_embedded', {}).get('items', [])
+
+    # Фильтрация по типу
+    if file_type:
+        if file_type == 'image':
+            items = [item for item in items if item['type'] == 'file' and item['file']['mime_type'].startswith('image/')]
+        elif file_type == 'document':
+            items = [item for item in items if item['type'] == 'file' and item['file']['mime_type'] in ['application/pdf', 'application/msword']]
+        # Добавьте другие фильтры по необходимости
+
+    # Получение общего количества элементов без учёта фильтрации
+    total_items = files_data.get('_embedded', {}).get('total', 0)
+
+    # Определение наличия следующей и предыдущей страниц
+    next_page = page + 1 if offset + limit < total_items else None
+    prev_page = page - 1 if page > 1 else None
+
+    return render_template("files.html", items=items, public_key=public_key, next_page=next_page, prev_page=prev_page, file_type=file_type)
 
 
-# Загрузка выбранного файла
 @app.route("/download", methods=["GET"])
 def download():
     public_key = request.args.get("public_key")
     file_path = request.args.get("file_path")
 
-    download_url = f"{YANDEX_API_URL}/download?public_key={public_key}&path={file_path}"
-    response = requests.get(download_url)
+    if not public_key or not file_path:
+        flash("Некорректные параметры для скачивания.", "danger")
+        return redirect(url_for("index"))
 
-    if response.status_code == 200:
+    download_url = f"{YANDEX_API_URL}/download"
+    params = {'public_key': public_key, 'path': file_path}
+    try:
+        response = requests.get(download_url, params=params)
+        response.raise_for_status()
         download_link = response.json()['href']
         file_response = requests.get(download_link)
         return send_file(BytesIO(file_response.content),
-                         download_name=file_path.split('/')[-1])
-    else:
-        return "Ошибка при загрузке файла."
+                         download_name=os.path.basename(file_path),
+                         as_attachment=True)
+    except requests.exceptions.HTTPError as http_err:
+        flash(f"HTTP error occurred: {http_err}", "danger")
+    except Exception as err:
+        flash(f"Error occurred: {err}", "danger")
+    return redirect(url_for("files", public_key=public_key))
+
+
+@app.route("/download_multiple", methods=["POST"])
+def download_multiple():
+    public_key = request.form.get("public_key")
+    file_paths = request.form.getlist("file_paths")
+
+    if not public_key or not file_paths:
+        flash("Нет выбранных файлов для скачивания.", "warning")
+        return redirect(url_for("files", public_key=public_key))
+
+    # Создание временного архива
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+        for file_path in file_paths:
+            download_url = f"{YANDEX_API_URL}/download"
+            params = {'public_key': public_key, 'path': file_path}
+            try:
+                response = requests.get(download_url, params=params)
+                response.raise_for_status()
+                download_link = response.json()['href']
+                file_response = requests.get(download_link)
+                zip_file.writestr(os.path.basename(file_path), file_response.content)
+            except requests.exceptions.HTTPError:
+                flash(f"Ошибка при загрузке файла: {file_path}", "danger")
+            except Exception:
+                flash(f"Не удалось загрузить файл: {file_path}", "danger")
+
+    zip_buffer.seek(0)
+    return send_file(zip_buffer, mimetype='application/zip', download_name='files.zip', as_attachment=True)
 
 
 if __name__ == "__main__":

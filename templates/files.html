@@ -3,18 +3,123 @@
 <head>
     <meta charset="UTF-8">
     <title>Список файлов на Яндекс.Диске</title>
+    <!-- Подключение Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
-    <h1>Файлы и папки</h1>
-    <ul>
-        {% for item in items %}
-        <li>
-            {{ item['name'] }}
-            {% if item['type'] == 'file' %}
-                <a href="{{ url_for('download', public_key=public_key, file_path=item['path']) }}">Скачать</a>
-            {% endif %}
-        </li>
+<div class="container mt-5">
+    <h1 class="mb-4">Файлы и папки</h1>
+
+    <!-- Блок для отображения Flash сообщений -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Закрыть"></button>
+          </div>
         {% endfor %}
-    </ul>
+      {% endif %}
+    {% endwith %}
+
+    <!-- Форма для фильтрации и ввода публичной ссылки -->
+    <form method="GET" action="{{ url_for('files') }}" class="row g-3 mb-4">
+        <input type="hidden" name="public_key" value="{{ public_key }}">
+
+        <div class="col-md-6">
+            <label for="public_key" class="form-label">Публичная ссылка:</label>
+            <input type="text" id="public_key" name="public_key" value="{{ public_key }}" class="form-control" required>
+        </div>
+
+        <div class="col-md-4">
+            <label for="file_type" class="form-label">Тип файлов:</label>
+            <select id="file_type" name="file_type" class="form-select">
+                <option value="" {% if not file_type %}selected{% endif %}>Все файлы</option>
+                <option value="image" {% if file_type == 'image' %}selected{% endif %}>Изображения</option>
+                <option value="document" {% if file_type == 'document' %}selected{% endif %}>Документы</option>
+                <!-- Добавьте другие типы по необходимости -->
+            </select>
+        </div>
+
+        <div class="col-md-2 align-self-end">
+            <button type="submit" class="btn btn-primary w-100">Применить фильтр</button>
+        </div>
+    </form>
+
+    <!-- Форма для массового скачивания файлов -->
+    <form method="POST" action="{{ url_for('download_multiple') }}">
+        <input type="hidden" name="public_key" value="{{ public_key }}">
+
+        <div class="mb-3">
+            <button type="submit" class="btn btn-success">Скачать выбранные файлы</button>
+        </div>
+
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th scope="col"><input type="checkbox" id="select-all"></th>
+                    <th scope="col">Название</th>
+                    <th scope="col">Тип</th>
+                    <th scope="col">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr>
+                    <td><input type="checkbox" name="file_paths" value="{{ item['path'] }}" class="file-checkbox"></td>
+                    <td>{{ item['name'] }}</td>
+                    <td>{{ item['file']['mime_type'] if item['type'] == 'file' else 'Папка' }}</td>
+                    <td>
+                        {% if item['type'] == 'file' %}
+                            <a href="{{ url_for('download', public_key=public_key, file_path=item['path']) }}" class="btn btn-sm btn-primary">Скачать</a>
+                        {% else %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </form>
+
+    <!-- Пагинация -->
+    <nav aria-label="Page navigation">
+        <ul class="pagination">
+            {% if prev_page %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('files', public_key=public_key, page=prev_page, file_type=file_type) }}" aria-label="Previous">
+                        <span aria-hidden="true">&laquo; Предыдущая</span>
+                    </a>
+                </li>
+            {% else %}
+                <li class="page-item disabled">
+                    <span class="page-link">&laquo; Предыдущая</span>
+                </li>
+            {% endif %}
+
+            {% if next_page %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('files', public_key=public_key, page=next_page, file_type=file_type) }}" aria-label="Next">
+                        <span aria-hidden="true">Следующая &raquo;</span>
+                    </a>
+                </li>
+            {% else %}
+                <li class="page-item disabled">
+                    <span class="page-link">Следующая &raquo;</span>
+                </li>
+            {% endif %}
+        </ul>
+    </nav>
+</div>
+
+<!-- Скрипт для "Выбрать все" чекбоксы -->
+<script>
+    document.getElementById('select-all').addEventListener('change', function() {
+        let checkboxes = document.querySelectorAll('.file-checkbox');
+        checkboxes.forEach((checkbox) => {
+            checkbox.checked = this.checked;
+        });
+    });
+</script>
 </body>
 </html>
