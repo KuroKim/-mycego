@@ -8,20 +8,6 @@
 </head>
 <body>
 <div class="container mt-5">
-    <h1 class="mb-4">Файлы и папки</h1>
-
-    <!-- Блок для отображения Flash сообщений -->
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for category, message in messages %}
-          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-            {{ message }}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Закрыть"></button>
-          </div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
-
     <!-- Форма для фильтрации и ввода публичной ссылки -->
     <form method="GET" action="{{ url_for('files') }}" class="row g-3 mb-4">
         <input type="hidden" name="public_key" value="{{ public_key }}">
@@ -37,7 +23,7 @@
                 <option value="" {% if not file_type %}selected{% endif %}>Все файлы</option>
                 <option value="image" {% if file_type == 'image' %}selected{% endif %}>Изображения</option>
                 <option value="document" {% if file_type == 'document' %}selected{% endif %}>Документы</option>
-                <!-- Добавьте другие типы по необходимости -->
+                <option value="other" {% if file_type == 'other' %}selected{% endif %}>Другие файлы</option>
             </select>
         </div>
 
@@ -64,20 +50,26 @@
                 </tr>
             </thead>
             <tbody>
-                {% for item in items %}
-                <tr>
-                    <td><input type="checkbox" name="file_paths" value="{{ item['path'] }}" class="file-checkbox"></td>
-                    <td>{{ item['name'] }}</td>
-                    <td>{{ item['file']['mime_type'] if item['type'] == 'file' else 'Папка' }}</td>
-                    <td>
-                        {% if item['type'] == 'file' %}
-                            <a href="{{ url_for('download', public_key=public_key, file_path=item['path']) }}" class="btn btn-sm btn-primary">Скачать</a>
-                        {% else %}
-                            <span class="text-muted">-</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
+                {% if items %}
+                    {% for item in items %}
+                    <tr>
+                        <td><input type="checkbox" name="file_paths" value="{{ item['path'] }}" class="file-checkbox"></td>
+                        <td>{{ item['name'] }}</td>
+                        <td>{{ item['file']['mime_type'] if item['type'] == 'file' else 'Папка' }}</td>
+                        <td>
+                            {% if item['type'] == 'file' %}
+                                <a href="{{ url_for('download', public_key=public_key, file_path=item['path']) }}" class="btn btn-sm btn-primary">Скачать</a>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="4" class="text-center">Нет файлов для отображения.</td>
+                    </tr>
+                {% endif %}
             </tbody>
         </table>
     </form>

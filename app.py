@@ -26,8 +26,6 @@
 # 2.	Возможность скачивания нескольких файлов одновременно.
 # 3.	Реализовать кэширование списка файлов, чтобы не запрашивать его каждый раз с сервера.
 
-# https://disk.yandex.ru/d/bmJBMpJjL-mrsQ
-
 
 from flask import Flask, render_template, request, send_file, redirect, url_for, flash
 import requests
@@ -37,15 +35,34 @@ from flask_caching import Cache
 import zipfile
 import os
 import logging
+import re
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'  # Необходимо для Flash сообщений
 cache = Cache(app, config={'CACHE_TYPE': 'simple'})
 
 # Настройка логирования
 logging.basicConfig(level=logging.DEBUG)
 
 YANDEX_API_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
+
+# Определение MIME-типов для документов
+DOCUMENT_MIME_TYPES = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/jpg'
+    # Добавьте другие MIME-типы документов по необходимости
+]
+
+
+# Функция для проверки валидности URL Яндекс.Диска
+def is_valid_yandex_disk_url(url: str) -> bool:
+    pattern = r'^https?://disk\.yandex\.ru/d/[\w-]+$'
+    return re.match(pattern, url) is not None
 
 
 @cache.memoize(timeout=300)  # Кэшировать на 5 минут
@@ -57,7 +74,9 @@ def get_files_from_public_link(public_key: str, limit: int = 100, offset: int = 
     try:
         response = requests.get(YANDEX_API_URL, params=params)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        logging.debug(f"Ответ API: {data}")
+        return data
     except requests.exceptions.HTTPError as http_err:
         logging.error(f"HTTP error occurred: {http_err}")
         return {'error': f"HTTP error occurred: {http_err}"}
@@ -73,6 +92,9 @@ def index():
         if not public_key:
             flash("Пожалуйста, введите публичную ссылку.", "danger")
             return redirect(url_for("index"))
+        if not is_valid_yandex_disk_url(public_key):
+            flash("Введена некорректная публичная ссылка на Яндекс.Диск.", "danger")
+            return redirect(url_for("index"))
         return redirect(url_for("files", public_key=public_key))
     return render_template("index.html")
 
@@ -80,7 +102,10 @@ def index():
 @app.route("/files")
 def files():
     public_key = request.args.get("public_key")
-    page = int(request.args.get("page", 1))
+    try:
+        page = max(int(request.args.get("page", 1)), 1)  # Обеспечить, что страница >= 1
+    except ValueError:
+        page = 1
     file_type = request.args.get("file_type", "")
     limit = 100
     offset = (page - 1) * limit
@@ -94,13 +119,42 @@ def files():
 
     items = files_data.get('_embedded', {}).get('items', [])
 
+    # Фильтрация только словарей
+    items = [item for item in items if isinstance(item, dict)]
+
+    # Функция для безопасного получения mime_type
+    def get_mime_type(item):
+        file_info = item.get('file', {})
+        if isinstance(file_info, dict):
+            return file_info.get('mime_type', '').lower()
+        return ''
+
+    # Логирование MIME-типов всех файлов
+    for idx, item in enumerate(items):
+        mime_type = get_mime_type(item)
+        logging.debug(f"Файл {idx}: {item.get('name', 'Без имени')} - MIME тип: {mime_type}")
+
     # Фильтрация по типу
     if file_type:
         if file_type == 'image':
-            items = [item for item in items if item['type'] == 'file' and item['file']['mime_type'].startswith('image/')]
+            items = [
+                item for item in items
+                if item.get('type') == 'file' and
+                   get_mime_type(item).startswith('image/')
+            ]
         elif file_type == 'document':
-            items = [item for item in items if item['type'] == 'file' and item['file']['mime_type'] in ['application/pdf', 'application/msword']]
-        # Добавьте другие фильтры по необходимости
+            items = [
+                item for item in items
+                if item.get('type') == 'file' and
+                   get_mime_type(item) in [m.lower() for m in DOCUMENT_MIME_TYPES]
+            ]
+        elif file_type == 'other':
+            items = [
+                item for item in items
+                if item.get('type') == 'file' and
+                   not get_mime_type(item).startswith('image/') and
+                   get_mime_type(item) not in [m.lower() for m in DOCUMENT_MIME_TYPES]
+            ]
 
     # Получение общего количества элементов без учёта фильтрации
     total_items = files_data.get('_embedded', {}).get('total', 0)
@@ -113,7 +167,14 @@ def files():
 
     logging.debug(f"Pagination - Prev: {prev_page}, Next: {next_page}")
 
-    return render_template("files.html", items=items, public_key=public_key, next_page=next_page, prev_page=prev_page, file_type=file_type)
+    return render_template(
+        "files.html",
+        items=items,
+        public_key=public_key,
+        next_page=next_page,
+        prev_page=prev_page,
+        file_type=file_type
+    )
 
 
 # Загрузка выбранного файла
@@ -133,9 +194,11 @@ def download():
         response.raise_for_status()
         download_link = response.json()['href']
         file_response = requests.get(download_link)
-        return send_file(BytesIO(file_response.content),
-                         download_name=os.path.basename(file_path),
-                         as_attachment=True)
+        return send_file(
+            BytesIO(file_response.content),
+            download_name=os.path.basename(file_path),
+            as_attachment=True
+        )
     except requests.exceptions.HTTPError as http_err:
         flash(f"HTTP error occurred: {http_err}", "danger")
     except Exception as err:
@@ -143,6 +206,7 @@ def download():
     return redirect(url_for("files", public_key=public_key))
 
 
+# Скачивание нескольких файлов
 @app.route("/download_multiple", methods=["POST"])
 def download_multiple():
     public_key = request.form.get("public_key")
@@ -170,7 +234,12 @@ def download_multiple():
                 flash(f"Не удалось загрузить файл: {file_path}", "danger")
 
     zip_buffer.seek(0)
-    return send_file(zip_buffer, mimetype='application/zip', download_name='files.zip', as_attachment=True)
+    return send_file(
+        zip_buffer,
+        mimetype='application/zip',
+        download_name='files.zip',
+        as_attachment=True
+    )
 
 
 if __name__ == "__main__":
